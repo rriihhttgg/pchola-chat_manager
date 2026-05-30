@@ -1,7 +1,6 @@
 import os
 import re
 import json
-import asyncio
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -17,14 +16,12 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 DATA_FILE = "data.json"
 
 
-
 intents = discord.Intents.default()
 intents.guilds = True
 intents.members = True
-intents.message_content = False
+intents.message_content = True  # Нужен для префиксных команд
 
 bot = commands.Bot(command_prefix="!", intents=intents)
-
 
 
 DEFAULT_DATA = {
@@ -36,27 +33,27 @@ DEFAULT_DATA = {
 DEFAULT_RESPONSES = {
     "ban": {
         "success": "Пользователь {user} был забанен. Причина: {reason}",
-        "noadmin": "У тебя нет прав для использования команды /ban."
+        "noadmin": "У тебя нет прав для использования команды !ban."
     },
     "kick": {
         "success": "Пользователь {user} был кикнут. Причина: {reason}",
-        "noadmin": "У тебя нет прав для использования команды /kick."
+        "noadmin": "У тебя нет прав для использования команды !kick."
     },
     "mute": {
         "success": "Пользователь {user} был замучен на {duration}. Причина: {reason}",
-        "noadmin": "У тебя нет прав для использования команды /mute."
+        "noadmin": "У тебя нет прав для использования команды !mute."
     },
     "unmute": {
         "success": "Пользователь {user} был размучен.",
-        "noadmin": "У тебя нет прав для использования команды /unmute."
+        "noadmin": "У тебя нет прав для использования команды !unmute."
     },
     "warn": {
         "success": "Пользователь {user} получил предупреждение. Всего предупреждений: {count}. Причина: {reason}",
-        "noadmin": "У тебя нет прав для использования команды /warn."
+        "noadmin": "У тебя нет прав для использования команды !warn."
     },
     "warnings": {
         "success": "Предупреждения пользователя {user}: {warnings}",
-        "noadmin": "У тебя нет прав для использования команды /warnings."
+        "noadmin": "У тебя нет прав для использования команды !warnings."
     },
     "mywarn": {
         "success": "Твои предупреждения: {warnings}",
@@ -64,19 +61,19 @@ DEFAULT_RESPONSES = {
     },
     "clear": {
         "success": "Сообщение было удалено.",
-        "noadmin": "У тебя нет прав для использования команды /clear."
+        "noadmin": "У тебя нет прав для использования команды !clear."
     },
     "lock": {
         "success": "Канал {channel} был закрыт.",
-        "noadmin": "У тебя нет прав для использования команды /lock."
+        "noadmin": "У тебя нет прав для использования команды !lock."
     },
     "unlock": {
         "success": "Канал {channel} был открыт.",
-        "noadmin": "У тебя нет прав для использования команды /unlock."
+        "noadmin": "У тебя нет прав для использования команды !unlock."
     },
     "purge": {
         "success": "Удалено сообщений пользователя {user}: {count}",
-        "noadmin": "У тебя нет прав для использования команды /purge."
+        "noadmin": "У тебя нет прав для использования команды !purge."
     },
     "configure": {
         "success": "Ответы для команды /{command} обновлены.",
@@ -114,7 +111,6 @@ def get_guild_data(guild_id: int):
     return data["warnings"][guild_id], data["responses"][guild_id]
 
 
-
 def is_admin(member: discord.Member) -> bool:
     permissions = member.guild_permissions
     return (
@@ -132,28 +128,6 @@ def is_real_admin(member: discord.Member) -> bool:
     return permissions.administrator or permissions.manage_guild
 
 
-async def check_admin_or_reply(interaction: discord.Interaction, command_name: str) -> bool:
-    if not interaction.guild:
-        await interaction.response.send_message(
-            "Эта команда работает только на сервере.",
-            ephemeral=True
-        )
-        return False
-
-    if isinstance(interaction.user, discord.Member) and is_admin(interaction.user):
-        return True
-
-    await send_configured_response(
-        interaction,
-        command_name,
-        response_type="noadmin",
-        ephemeral=True
-    )
-    return False
-
-
-
-# FIX: параметр называется response_type везде одинаково
 def get_response(guild_id: int, command_name: str, response_type: str) -> str:
     _, guild_responses = get_guild_data(guild_id)
     custom = guild_responses.get(command_name, {}).get(response_type)
@@ -164,22 +138,10 @@ def get_response(guild_id: int, command_name: str, response_type: str) -> str:
     return DEFAULT_RESPONSES.get(command_name, {}).get(response_type, "")
 
 
-# FIX: **kwargs вместо kwargs
-async def send_configured_response(
-    interaction: discord.Interaction,
-    command_name: str,
-    response_type: str = "success",
-    ephemeral: bool = False,
-    **kwargs
-):
-    if not interaction.guild:
-        return
-
-    template = get_response(interaction.guild.id, command_name, response_type)
+async def send_response(ctx: commands.Context, command_name: str, response_type: str = "success", **kwargs):
+    template = get_response(ctx.guild.id, command_name, response_type)
 
     if template == "":
-        if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=True)
         return
 
     try:
@@ -187,16 +149,24 @@ async def send_configured_response(
     except Exception:
         message = template
 
-    if not interaction.response.is_done():
-        await interaction.response.send_message(message, ephemeral=ephemeral)
-    else:
-        await interaction.followup.send(message, ephemeral=ephemeral)
+    await ctx.send(message)
 
+
+async def check_admin(ctx: commands.Context, command_name: str) -> bool:
+    if not ctx.guild:
+        await ctx.send("Эта команда работает только на сервере.")
+        return False
+
+    if is_admin(ctx.author):
+        return True
+
+    await send_response(ctx, command_name, response_type="noadmin")
+    return False
 
 
 def parse_duration(duration: str) -> int:
     """
-    Поддерживает:
+    Поддерживает любую комбинацию:
     1h
     34m
     12m 58s
@@ -204,10 +174,7 @@ def parse_duration(duration: str) -> int:
     1243124s
     1d 2h 3m 4s
     """
-
     duration = duration.lower().strip()
-
-    # FIX: \s* вместо \s — пробел между числом и буквой опционален
     pattern = r"(\d+)\s*(d|h|m|s)"
     matches = re.findall(pattern, duration)
 
@@ -220,7 +187,7 @@ def parse_duration(duration: str) -> int:
         value = int(value)
 
         if unit == "d":
-            total_seconds += value * 86400  # FIX: было value 86400 (пропущен *)
+            total_seconds += value * 86400
         elif unit == "h":
             total_seconds += value * 3600
         elif unit == "m":
@@ -234,7 +201,7 @@ def parse_duration(duration: str) -> int:
 def human_duration(seconds: int) -> str:
     days, seconds = divmod(seconds, 86400)
     hours, seconds = divmod(seconds, 3600)
-    minutes, seconds = divmod(seconds, 60)  # FIX: был неправильный отступ
+    minutes, seconds = divmod(seconds, 60)
 
     parts = []
 
@@ -250,78 +217,45 @@ def human_duration(seconds: int) -> str:
     return " ".join(parts) if parts else "0s"
 
 
-
 def can_act_on_member(moderator: discord.Member, target: discord.Member) -> bool:
     if moderator.guild.owner_id == moderator.id:
         return True
-
     return moderator.top_role > target.top_role
 
 
 def bot_can_act_on_member(guild: discord.Guild, target: discord.Member) -> bool:
     me = guild.me
-
     if me is None:
         return False
-
     return me.top_role > target.top_role
 
 
-async def ensure_target_allowed(
-    interaction: discord.Interaction,
-    target: discord.Member
-) -> bool:
-    if not interaction.guild:
-        return False
-
-    moderator = interaction.user
-
-    if not isinstance(moderator, discord.Member):
-        return False
-
-    if target.id == interaction.guild.owner_id:
-        await interaction.response.send_message(
-            "Нельзя применить действие к владельцу сервера.",
-            ephemeral=True
-        )
+async def ensure_target_allowed(ctx: commands.Context, target: discord.Member) -> bool:
+    if target.id == ctx.guild.owner_id:
+        await ctx.send("Нельзя применить действие к владельцу сервера.")
         return False
 
     if target.id == bot.user.id:
-        await interaction.response.send_message(
-            "Нельзя применить действие к боту.",
-            ephemeral=True
-        )
+        await ctx.send("Нельзя применить действие к боту.")
         return False
 
-    if target.id == moderator.id:
-        await interaction.response.send_message(
-            "Нельзя применить действие к самому себе.",
-            ephemeral=True
-        )
+    if target.id == ctx.author.id:
+        await ctx.send("Нельзя применить действие к самому себе.")
         return False
 
-    if not can_act_on_member(moderator, target):
-        await interaction.response.send_message(
-            "Ты не можешь применить действие к пользователю с ролью выше или равной твоей.",
-            ephemeral=True
-        )
+    if not can_act_on_member(ctx.author, target):
+        await ctx.send("Ты не можешь применить действие к пользователю с ролью выше или равной твоей.")
         return False
 
-    # FIX: был неправильный отступ
-    if not bot_can_act_on_member(interaction.guild, target):
-        await interaction.response.send_message(
-            "Я не могу применить действие к этому пользователю. Моя роль должна быть выше его роли.",
-            ephemeral=True
-        )
+    if not bot_can_act_on_member(ctx.guild, target):
+        await ctx.send("Я не могу применить действие к этому пользователю. Моя роль должна быть выше его роли.")
         return False
 
     return True
 
 
-# FIX: параметр переименован в user_id, исправлен unpacking
 def get_user_warnings(guild_id: int, user_id: int):
     warnings, _ = get_guild_data(guild_id)
-
     user_id = str(user_id)
 
     if user_id not in warnings:
@@ -330,370 +264,248 @@ def get_user_warnings(guild_id: int, user_id: int):
     return warnings[user_id]
 
 
+def parse_mute_args(args: tuple) -> tuple[discord.Member | None, int, str]:
+    """
+    Парсит аргументы команды !mute.
+    Возвращает (member, seconds, reason).
+    Формат: !mute @user [длительность] [причина]
+    Длительность — любая комбинация: 1h, 30m, 1h 30m, 12m 58s и т.д.
+    """
+    # args[0] — это уже resolved member через конвертер
+    # остальное — строка с временем и причиной
+    return None  # не используется, см. команду ниже
 
-@bot.tree.command(name="ban", description="Забанить пользователя навсегда.")
-@app_commands.describe(
-    user="Пользователь, которого нужно забанить",
-    reason="Причина бана"
-)
-async def ban_command(
-    interaction: discord.Interaction,
-    user: discord.Member,
-    reason: str = "Причина не указана"
-):
-    if not await check_admin_or_reply(interaction, "ban"):
+
+
+# ─────────────────────────────────────────────
+#                  КОМАНДЫ
+# ─────────────────────────────────────────────
+
+@bot.command(name="ban")
+async def ban_command(ctx: commands.Context, user: discord.Member, *, reason: str = "Причина не указана"):
+    if not await check_admin(ctx, "ban"):
         return
 
-    if not await ensure_target_allowed(interaction, user):
+    if not await ensure_target_allowed(ctx, user):
         return
 
-    await user.ban(reason=f"{reason} | Moderator: {interaction.user}")
-
-    await send_configured_response(
-        interaction,
-        "ban",
-        user=user.mention,
-        moderator=interaction.user.mention,
-        reason=reason
-    )
+    await user.ban(reason=f"{reason} | Moderator: {ctx.author}")
+    await send_response(ctx, "ban", user=user.mention, moderator=ctx.author.mention, reason=reason)
 
 
-@bot.tree.command(name="kick", description="Кикнуть пользователя с сервера.")
-@app_commands.describe(
-    user="Пользователь, которого нужно кикнуть",
-    reason="Причина кика"
-)
-async def kick_command(
-    interaction: discord.Interaction,
-    user: discord.Member,
-    reason: str = "Причина не указана"
-):
-    if not await check_admin_or_reply(interaction, "kick"):
+@bot.command(name="kick")
+async def kick_command(ctx: commands.Context, user: discord.Member, *, reason: str = "Причина не указана"):
+    if not await check_admin(ctx, "kick"):
         return
 
-    if not await ensure_target_allowed(interaction, user):
+    if not await ensure_target_allowed(ctx, user):
         return
 
-    await user.kick(reason=f"{reason} | Moderator: {interaction.user}")
-
-    await send_configured_response(
-        interaction,
-        "kick",
-        user=user.mention,
-        moderator=interaction.user.mention,
-        reason=reason
-    )
+    await user.kick(reason=f"{reason} | Moderator: {ctx.author}")
+    await send_response(ctx, "kick", user=user.mention, moderator=ctx.author.mention, reason=reason)
 
 
-@bot.tree.command(name="mute", description="Замутить пользователя на время.")
-@app_commands.describe(
-    user="Пользователь, которого нужно замутить",
-    duration="Время: например 1h 34m, 12m 58s, 12h 23m 22s, 1243124s",
-    reason="Причина мута"
-)
-async def mute_command(
-    interaction: discord.Interaction,
-    user: discord.Member,
-    duration: str,
-    reason: str = "Причина не указана"
-):
-    if not await check_admin_or_reply(interaction, "mute"):
+@bot.command(name="mute")
+async def mute_command(ctx: commands.Context, user: discord.Member, *, args: str = ""):
+    if not await check_admin(ctx, "mute"):
         return
 
-    if not await ensure_target_allowed(interaction, user):
+    if not await ensure_target_allowed(ctx, user):
         return
+
+    # Парсим время из начала строки args, остаток — причина
+    # Паттерн: одна или несколько групп вида "число + d/h/m/s"
+    duration_pattern = r"^((?:\d+\s*[dhms]\s*)+)"
+    match = re.match(duration_pattern, args.strip(), re.IGNORECASE)
+
+    if not match:
+        await ctx.send("Укажи время. Пример: `!mute @user 1h 30m причина`")
+        return
+
+    duration_str = match.group(1).strip()
+    reason = args[match.end():].strip() or "Причина не указана"
 
     try:
-        seconds = parse_duration(duration)
+        seconds = parse_duration(duration_str)
     except ValueError:
-        await interaction.response.send_message(
-            "Неверный формат времени. Пример: 1h 34m, 12m 58s, 1243124s.",
-            ephemeral=True
-        )
+        await ctx.send("Неверный формат времени. Пример: `1h`, `30m`, `1h 30m`, `12m 58s`")
         return
 
     if seconds <= 0:
-        await interaction.response.send_message(
-            "Время мута должно быть больше 0 секунд.",
-            ephemeral=True
-        )
+        await ctx.send("Время мута должно быть больше 0 секунд.")
         return
 
     max_timeout_seconds = 28 * 24 * 60 * 60
 
     if seconds > max_timeout_seconds:
-        await interaction.response.send_message(
-            "Discord timeout не может быть больше 28 дней.",
-            ephemeral=True
-        )
+        await ctx.send("Discord timeout не может быть больше 28 дней.")
         return
 
     until = datetime.now(timezone.utc) + timedelta(seconds=seconds)
-
-    await user.timeout(until, reason=f"{reason} | Moderator: {interaction.user}")
-
-    await send_configured_response(
-        interaction,
-        "mute",
+    await user.timeout(until, reason=f"{reason} | Moderator: {ctx.author}")
+    await send_response(
+        ctx, "mute",
         user=user.mention,
-        moderator=interaction.user.mention,
+        moderator=ctx.author.mention,
         duration=human_duration(seconds),
         reason=reason
     )
 
 
-@bot.tree.command(name="unmute", description="Снять мут с пользователя.")
-@app_commands.describe(
-    user="Пользователь, которого нужно размутить"
-)
-async def unmute_command(
-    interaction: discord.Interaction,
-    user: discord.Member
-):
-    if not await check_admin_or_reply(interaction, "unmute"):
+@bot.command(name="unmute")
+async def unmute_command(ctx: commands.Context, user: discord.Member):
+    if not await check_admin(ctx, "unmute"):
         return
 
-    if not await ensure_target_allowed(interaction, user):
+    if not await ensure_target_allowed(ctx, user):
         return
 
-    await user.timeout(None, reason=f"Unmute | Moderator: {interaction.user}")
-
-    await send_configured_response(
-        interaction,
-        "unmute",
-        user=user.mention,
-        moderator=interaction.user.mention
-    )
+    await user.timeout(None, reason=f"Unmute | Moderator: {ctx.author}")
+    await send_response(ctx, "unmute", user=user.mention, moderator=ctx.author.mention)
 
 
-@bot.tree.command(name="warn", description="Выдать предупреждение пользователю.")
-@app_commands.describe(
-    user="Пользователь, которому нужно выдать предупреждение",
-    reason="Причина предупреждения"
-)
-async def warn_command(
-    interaction: discord.Interaction,
-    user: discord.Member,
-    reason: str = "Причина не указана"
-):
-    if not await check_admin_or_reply(interaction, "warn"):
+@bot.command(name="warn")
+async def warn_command(ctx: commands.Context, user: discord.Member, *, reason: str = "Причина не указана"):
+    if not await check_admin(ctx, "warn"):
         return
 
-    warnings = get_user_warnings(interaction.guild.id, user.id)
+    warnings = get_user_warnings(ctx.guild.id, user.id)
 
     warnings.append({
         "reason": reason,
-        "moderator_id": interaction.user.id,
-        "moderator_name": str(interaction.user),
+        "moderator_id": ctx.author.id,
+        "moderator_name": str(ctx.author),
         "created_at": datetime.now(timezone.utc).isoformat()
     })
 
     save_data(data)
-
-    await send_configured_response(
-        interaction,
-        "warn",
+    await send_response(
+        ctx, "warn",
         user=user.mention,
-        moderator=interaction.user.mention,
+        moderator=ctx.author.mention,
         reason=reason,
         count=len(warnings)
     )
 
 
-@bot.tree.command(name="warnings", description="Посмотреть предупреждения пользователя.")
-@app_commands.describe(
-    user="Пользователь, чьи предупреждения нужно посмотреть"
-)
-async def warnings_command(
-    interaction: discord.Interaction,
-    user: discord.Member
-):
-    if not await check_admin_or_reply(interaction, "warnings"):
+@bot.command(name="warnings")
+async def warnings_command(ctx: commands.Context, user: discord.Member):
+    if not await check_admin(ctx, "warnings"):
         return
 
-    warnings = get_user_warnings(interaction.guild.id, user.id)
+    warnings = get_user_warnings(ctx.guild.id, user.id)
 
     if not warnings:
         warnings_text = "нет предупреждений"
     else:
         lines = []
-
-        # FIX: был неправильный отступ
         for index, warn in enumerate(warnings, start=1):
             reason = warn.get("reason", "Причина не указана")
             moderator_name = warn.get("moderator_name", "Unknown")
             created_at = warn.get("created_at", "Unknown date")
-
-            lines.append(
-                f"{index}. {reason} | Модератор: {moderator_name} | Дата: {created_at}"
-            )
-
+            lines.append(f"{index}. {reason} | Модератор: {moderator_name} | Дата: {created_at}")
         warnings_text = "\n".join(lines)
 
-    await send_configured_response(
-        interaction,
-        "warnings",
-        user=user.mention,
-        warnings=warnings_text
-    )
+    await send_response(ctx, "warnings", user=user.mention, warnings=warnings_text)
 
 
-@bot.tree.command(name="mywarn", description="Посмотреть свои предупреждения.")
-async def mywarn_command(interaction: discord.Interaction):
-    # FIX: проверка гильдии перенесена до обращения к interaction.guild.id
-    if not interaction.guild:
-        await interaction.response.send_message("Только на сервере.", ephemeral=True)
+@bot.command(name="mywarn")
+async def mywarn_command(ctx: commands.Context):
+    if not ctx.guild:
+        await ctx.send("Только на сервере.")
         return
 
-    warnings = get_user_warnings(interaction.guild.id, interaction.user.id)
+    warnings = get_user_warnings(ctx.guild.id, ctx.author.id)
 
     if not warnings:
         warnings_text = "нет предупреждений"
     else:
         lines = []
-
         for index, warn in enumerate(warnings, start=1):
             reason = warn.get("reason", "Причина не указана")
             moderator_name = warn.get("moderator_name", "Unknown")
             created_at = warn.get("created_at", "Unknown date")
-
-            lines.append(
-                f"{index}. {reason} | Модератор: {moderator_name} | Дата: {created_at}"
-            )
-
+            lines.append(f"{index}. {reason} | Модератор: {moderator_name} | Дата: {created_at}")
         warnings_text = "\n".join(lines)
 
-    await send_configured_response(
-        interaction,
-        "mywarn",
-        user=interaction.user.mention,
-        warnings=warnings_text,
-        ephemeral=True
-    )
+    await send_response(ctx, "mywarn", user=ctx.author.mention, warnings=warnings_text)
 
 
-@bot.tree.command(name="clear", description="Удалить сообщение по ID.")
-@app_commands.describe(
-    message_id="ID сообщения, которое нужно удалить"
-)
-async def clear_command(
-    interaction: discord.Interaction,
-    message_id: str
-):
-    if not await check_admin_or_reply(interaction, "clear"):
+@bot.command(name="clear")
+async def clear_command(ctx: commands.Context):
+    if not await check_admin(ctx, "clear"):
         return
 
-    channel = interaction.channel
+    # Удаляем команду !clear
+    await ctx.message.delete()
 
-    # FIX: был неправильный отступ
-    if not isinstance(channel, discord.TextChannel):
-        await interaction.response.send_message(
-            "Эта команда работает только в текстовом канале.",
-            ephemeral=True
-        )
+    # Если это ответ на сообщение — удаляем то сообщение
+    if ctx.message.reference and ctx.message.reference.message_id:
+        try:
+            target_message = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+            await target_message.delete()
+            await send_response(ctx, "clear", moderator=ctx.author.mention)
+        except discord.NotFound:
+            await ctx.send("Сообщение не найдено.", delete_after=5)
+    else:
+        await ctx.send("Ответь на сообщение которое нужно удалить.", delete_after=5)
+
+
+@bot.command(name="lock")
+async def lock_command(ctx: commands.Context):
+    if not await check_admin(ctx, "lock"):
         return
 
-    try:
-        message_id_int = int(message_id)
-        message = await channel.fetch_message(message_id_int)
-    except Exception:
-        await interaction.response.send_message(
-            "Сообщение не найдено.",
-            ephemeral=True
-        )
-        return
-
-    await message.delete()
-
-    await send_configured_response(
-        interaction,
-        "clear",
-        moderator=interaction.user.mention
-    )
-
-
-@bot.tree.command(name="lock", description="Закрыть текущий канал для обычных пользователей.")
-async def lock_command(interaction: discord.Interaction):
-    if not await check_admin_or_reply(interaction, "lock"):
-        return
-
-    channel = interaction.channel
+    channel = ctx.channel
 
     if not isinstance(channel, discord.TextChannel):
-        await interaction.response.send_message(
-            "Эта команда работает только в текстовом канале.",
-            ephemeral=True
-        )
+        await ctx.send("Эта команда работает только в текстовом канале.")
         return
 
-    overwrite = channel.overwrites_for(interaction.guild.default_role)
+    overwrite = channel.overwrites_for(ctx.guild.default_role)
     overwrite.send_messages = False
 
     await channel.set_permissions(
-        interaction.guild.default_role,
+        ctx.guild.default_role,
         overwrite=overwrite,
-        reason=f"Channel locked by {interaction.user}"
+        reason=f"Channel locked by {ctx.author}"
     )
 
-    await send_configured_response(
-        interaction,
-        "lock",
-        channel=channel.mention,
-        moderator=interaction.user.mention
-    )
+    await send_response(ctx, "lock", channel=channel.mention, moderator=ctx.author.mention)
 
 
-@bot.tree.command(name="unlock", description="Открыть текущий канал для обычных пользователей.")
-async def unlock_command(interaction: discord.Interaction):
-    if not await check_admin_or_reply(interaction, "unlock"):
+@bot.command(name="unlock")
+async def unlock_command(ctx: commands.Context):
+    if not await check_admin(ctx, "unlock"):
         return
 
-    channel = interaction.channel
+    channel = ctx.channel
 
     if not isinstance(channel, discord.TextChannel):
-        await interaction.response.send_message(
-            "Эта команда работает только в текстовом канале.",
-            ephemeral=True
-        )
+        await ctx.send("Эта команда работает только в текстовом канале.")
         return
 
-    overwrite = channel.overwrites_for(interaction.guild.default_role)
+    overwrite = channel.overwrites_for(ctx.guild.default_role)
     overwrite.send_messages = None
 
     await channel.set_permissions(
-        interaction.guild.default_role,
+        ctx.guild.default_role,
         overwrite=overwrite,
-        reason=f"Channel unlocked by {interaction.user}"
+        reason=f"Channel unlocked by {ctx.author}"
     )
 
-    await send_configured_response(
-        interaction,
-        "unlock",
-        channel=channel.mention,
-        moderator=interaction.user.mention
-    )
+    await send_response(ctx, "unlock", channel=channel.mention, moderator=ctx.author.mention)
 
 
-@bot.tree.command(name="purge", description="Удалить сообщения пользователя в текущем канале.")
-@app_commands.describe(
-    user="Пользователь, чьи сообщения нужно удалить",
-    scan_limit="Сколько последних сообщений проверить. По умолчанию 1000"
-)
-async def purge_command(
-    interaction: discord.Interaction,
-    user: discord.Member,
-    scan_limit: int = 1000
-):
-    if not await check_admin_or_reply(interaction, "purge"):
+@bot.command(name="purge")
+async def purge_command(ctx: commands.Context, user: discord.Member, scan_limit: int = 1000):
+    if not await check_admin(ctx, "purge"):
         return
 
-    channel = interaction.channel
+    channel = ctx.channel
 
     if not isinstance(channel, discord.TextChannel):
-        await interaction.response.send_message(
-            "Эта команда работает только в текстовом канале.",
-            ephemeral=True
-        )
+        await ctx.send("Эта команда работает только в текстовом канале.")
         return
 
     if scan_limit < 1:
@@ -702,26 +514,235 @@ async def purge_command(
     if scan_limit > 10000:
         scan_limit = 10000
 
-    await interaction.response.defer()
+    await ctx.message.delete()
 
     deleted = await channel.purge(
         limit=scan_limit,
         check=lambda msg: msg.author.id == user.id,
-        reason=f"Purge by {interaction.user}"
+        reason=f"Purge by {ctx.author}"
     )
 
-    await send_configured_response(
-        interaction,
-        "purge",
-        user=user.mention,
-        moderator=interaction.user.mention,
-        count=len(deleted)
+    await send_response(ctx, "purge", user=user.mention, moderator=ctx.author.mention, count=len(deleted))
+
+
+# ─────────────────────────────────────────────
+#         КОНТЕКСТНЫЕ МЕНЮ (остаются slash)
+# ─────────────────────────────────────────────
+
+async def ctx_ban_author(interaction: discord.Interaction, message: discord.Message):
+    if not interaction.guild:
+        await interaction.response.send_message("Только на сервере.", ephemeral=True)
+        return
+
+    if not isinstance(interaction.user, discord.Member) or not is_admin(interaction.user):
+        await interaction.response.send_message("У тебя нет прав.", ephemeral=True)
+        return
+
+    if not isinstance(message.author, discord.Member):
+        await interaction.response.send_message("Автор сообщения не является участником сервера.", ephemeral=True)
+        return
+
+    target = message.author
+    moderator = interaction.user
+
+    if target.id == interaction.guild.owner_id:
+        await interaction.response.send_message("Нельзя применить действие к владельцу сервера.", ephemeral=True)
+        return
+
+    if target.id == bot.user.id:
+        await interaction.response.send_message("Нельзя применить действие к боту.", ephemeral=True)
+        return
+
+    if target.id == moderator.id:
+        await interaction.response.send_message("Нельзя применить действие к самому себе.", ephemeral=True)
+        return
+
+    if not can_act_on_member(moderator, target):
+        await interaction.response.send_message("Ты не можешь применить действие к этому пользователю.", ephemeral=True)
+        return
+
+    if not bot_can_act_on_member(interaction.guild, target):
+        await interaction.response.send_message("Моя роль должна быть выше роли пользователя.", ephemeral=True)
+        return
+
+    reason = "Ban через контекстное меню"
+    await target.ban(reason=f"{reason} | Moderator: {moderator}")
+    await interaction.response.send_message(f"Пользователь {target.mention} был забанен.", ephemeral=True)
+
+
+async def ctx_kick_author(interaction: discord.Interaction, message: discord.Message):
+    if not interaction.guild:
+        await interaction.response.send_message("Только на сервере.", ephemeral=True)
+        return
+
+    if not isinstance(interaction.user, discord.Member) or not is_admin(interaction.user):
+        await interaction.response.send_message("У тебя нет прав.", ephemeral=True)
+        return
+
+    if not isinstance(message.author, discord.Member):
+        await interaction.response.send_message("Автор сообщения не является участником сервера.", ephemeral=True)
+        return
+
+    target = message.author
+    moderator = interaction.user
+
+    if target.id == interaction.guild.owner_id:
+        await interaction.response.send_message("Нельзя применить действие к владельцу сервера.", ephemeral=True)
+        return
+
+    if target.id == bot.user.id:
+        await interaction.response.send_message("Нельзя применить действие к боту.", ephemeral=True)
+        return
+
+    if target.id == moderator.id:
+        await interaction.response.send_message("Нельзя применить действие к самому себе.", ephemeral=True)
+        return
+
+    if not can_act_on_member(moderator, target):
+        await interaction.response.send_message("Ты не можешь применить действие к этому пользователю.", ephemeral=True)
+        return
+
+    if not bot_can_act_on_member(interaction.guild, target):
+        await interaction.response.send_message("Моя роль должна быть выше роли пользователя.", ephemeral=True)
+        return
+
+    reason = "Kick через контекстное меню"
+    await target.kick(reason=f"{reason} | Moderator: {moderator}")
+    await interaction.response.send_message(f"Пользователь {target.mention} был кикнут.", ephemeral=True)
+
+
+async def ctx_mute_author(interaction: discord.Interaction, message: discord.Message):
+    if not interaction.guild:
+        await interaction.response.send_message("Только на сервере.", ephemeral=True)
+        return
+
+    if not isinstance(interaction.user, discord.Member) or not is_admin(interaction.user):
+        await interaction.response.send_message("У тебя нет прав.", ephemeral=True)
+        return
+
+    if not isinstance(message.author, discord.Member):
+        await interaction.response.send_message("Автор сообщения не является участником сервера.", ephemeral=True)
+        return
+
+    target = message.author
+    moderator = interaction.user
+
+    if target.id == interaction.guild.owner_id:
+        await interaction.response.send_message("Нельзя применить действие к владельцу сервера.", ephemeral=True)
+        return
+
+    if target.id == bot.user.id:
+        await interaction.response.send_message("Нельзя применить действие к боту.", ephemeral=True)
+        return
+
+    if target.id == moderator.id:
+        await interaction.response.send_message("Нельзя применить действие к самому себе.", ephemeral=True)
+        return
+
+    if not can_act_on_member(moderator, target):
+        await interaction.response.send_message("Ты не можешь применить действие к этому пользователю.", ephemeral=True)
+        return
+
+    if not bot_can_act_on_member(interaction.guild, target):
+        await interaction.response.send_message("Моя роль должна быть выше роли пользователя.", ephemeral=True)
+        return
+
+    seconds = 3600
+    reason = "Mute через контекстное меню (1ч)"
+    until = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+    await target.timeout(until, reason=f"{reason} | Moderator: {moderator}")
+    await interaction.response.send_message(f"Пользователь {target.mention} замучен на 1h.", ephemeral=True)
+
+
+async def ctx_unmute_author(interaction: discord.Interaction, message: discord.Message):
+    if not interaction.guild:
+        await interaction.response.send_message("Только на сервере.", ephemeral=True)
+        return
+
+    if not isinstance(interaction.user, discord.Member) or not is_admin(interaction.user):
+        await interaction.response.send_message("У тебя нет прав.", ephemeral=True)
+        return
+
+    if not isinstance(message.author, discord.Member):
+        await interaction.response.send_message("Автор сообщения не является участником сервера.", ephemeral=True)
+        return
+
+    target = message.author
+    moderator = interaction.user
+
+    if target.id == interaction.guild.owner_id:
+        await interaction.response.send_message("Нельзя применить действие к владельцу сервера.", ephemeral=True)
+        return
+
+    if target.id == bot.user.id:
+        await interaction.response.send_message("Нельзя применить действие к боту.", ephemeral=True)
+        return
+
+    if target.id == moderator.id:
+        await interaction.response.send_message("Нельзя применить действие к самому себе.", ephemeral=True)
+        return
+
+    if not can_act_on_member(moderator, target):
+        await interaction.response.send_message("Ты не можешь применить действие к этому пользователю.", ephemeral=True)
+        return
+
+    if not bot_can_act_on_member(interaction.guild, target):
+        await interaction.response.send_message("Моя роль должна быть выше роли пользователя.", ephemeral=True)
+        return
+
+    await target.timeout(None, reason=f"Unmute через контекстное меню | Moderator: {moderator}")
+    await interaction.response.send_message(f"Пользователь {target.mention} размучен.", ephemeral=True)
+
+
+async def ctx_warn_author(interaction: discord.Interaction, message: discord.Message):
+    if not interaction.guild:
+        await interaction.response.send_message("Только на сервере.", ephemeral=True)
+        return
+
+    if not isinstance(interaction.user, discord.Member) or not is_admin(interaction.user):
+        await interaction.response.send_message("У тебя нет прав.", ephemeral=True)
+        return
+
+    if not isinstance(message.author, discord.Member):
+        await interaction.response.send_message("Автор сообщения не является участником сервера.", ephemeral=True)
+        return
+
+    target = message.author
+    moderator = interaction.user
+    reason = "Warn через контекстное меню"
+
+    warnings = get_user_warnings(interaction.guild.id, target.id)
+
+    warnings.append({
+        "reason": reason,
+        "moderator_id": moderator.id,
+        "moderator_name": str(moderator),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "message_id": message.id,
+        "channel_id": message.channel.id
+    })
+
+    save_data(data)
+    await interaction.response.send_message(
+        f"Пользователь {target.mention} получил предупреждение. Всего: {len(warnings)}.",
+        ephemeral=True
     )
 
+
+bot.tree.add_command(app_commands.ContextMenu(name="Ban author", callback=ctx_ban_author))
+bot.tree.add_command(app_commands.ContextMenu(name="Kick author", callback=ctx_kick_author))
+bot.tree.add_command(app_commands.ContextMenu(name="Mute author 1h", callback=ctx_mute_author))
+bot.tree.add_command(app_commands.ContextMenu(name="Unmute author", callback=ctx_unmute_author))
+bot.tree.add_command(app_commands.ContextMenu(name="Warn author", callback=ctx_warn_author))
+
+
+# ─────────────────────────────────────────────
+#           /configure (остаётся slash)
+# ─────────────────────────────────────────────
 
 @bot.tree.command(name="configure", description="Настроить ответы команд.")
 @app_commands.describe(
-    command="Название команды без /, например ban, kick, mute",
+    command="Название команды без ! или /, например ban, kick, mute",
     success_response="Ответ при успешном выполнении. Напиши - чтобы бот ничего не писал",
     noadmin_response="Ответ если команду написал не админ. Напиши - чтобы бот ничего не писал"
 )
@@ -732,319 +753,51 @@ async def configure_command(
     noadmin_response: str | None = None
 ):
     if not interaction.guild:
-        await interaction.response.send_message(
-            "Эта команда работает только на сервере.",
-            ephemeral=True
-        )
+        await interaction.response.send_message("Эта команда работает только на сервере.", ephemeral=True)
         return
 
     if not isinstance(interaction.user, discord.Member) or not is_real_admin(interaction.user):
-        await send_configured_response(
-            interaction,
-            "configure",
-            response_type="noadmin",
-            ephemeral=True
-        )
+        await interaction.response.send_message("У тебя нет прав для использования команды /configure.", ephemeral=True)
         return
 
     command = command.lower().strip()
 
     if command not in DEFAULT_RESPONSES:
-        # FIX: было sendmessage (без подчёркивания)
-        await interaction.response.send_message(
-            f"Неизвестная команда {command}.",
-            ephemeral=True
-        )
+        await interaction.response.send_message(f"Неизвестная команда `{command}`.", ephemeral=True)
         return
 
-    # FIX: было , guild_responses (сломанный unpacking)
     _, guild_responses = get_guild_data(interaction.guild.id)
 
     if command not in guild_responses:
         guild_responses[command] = {}
 
     if success_response is not None:
-        if success_response == "-":
-            success_response = ""
-        guild_responses[command]["success"] = success_response
+        guild_responses[command]["success"] = "" if success_response == "-" else success_response
 
     if noadmin_response is not None:
-        if noadmin_response == "-":
-            noadmin_response = ""
-        guild_responses[command]["noadmin"] = noadmin_response
+        guild_responses[command]["noadmin"] = "" if noadmin_response == "-" else noadmin_response
 
     save_data(data)
 
-    await send_configured_response(
-        interaction,
-        "configure",
-        command=command
-    )
+    await interaction.response.send_message(f"Ответы для команды `{command}` обновлены.", ephemeral=True)
 
 
+# ─────────────────────────────────────────────
+#               ОБРАБОТКА ОШИБОК
+# ─────────────────────────────────────────────
 
-async def ctx_ban_author(
-    interaction: discord.Interaction,
-    message: discord.Message
-):
-    # FIX: был неправильный отступ
-    if not await check_admin_or_reply(interaction, "ban"):
-        return
-
-    if not isinstance(message.author, discord.Member):
-        await interaction.response.send_message(
-            "Автор сообщения не является участником сервера.",
-            ephemeral=True
-        )
-        return
-
-    target = message.author
-
-    if not await ensure_target_allowed(interaction, target):
-        return
-
-    reason = "Ban через контекстное меню сообщения"
-
-    await target.ban(reason=f"{reason} | Moderator: {interaction.user}")
-
-    await send_configured_response(
-        interaction,
-        "ban",
-        user=target.mention,
-        moderator=interaction.user.mention,
-        reason=reason
-    )
-
-
-async def ctx_kick_author(
-    interaction: discord.Interaction,
-    message: discord.Message
-):
-    if not await check_admin_or_reply(interaction, "kick"):
-        return
-
-    if not isinstance(message.author, discord.Member):
-        await interaction.response.send_message(
-            "Автор сообщения не является участником сервера.",
-            ephemeral=True
-        )
-        return
-
-    target = message.author
-
-    if not await ensure_target_allowed(interaction, target):
-        return
-
-    reason = "Kick через контекстное меню сообщения"
-
-    await target.kick(reason=f"{reason} | Moderator: {interaction.user}")
-
-    await send_configured_response(
-        interaction,
-        "kick",
-        user=target.mention,
-        moderator=interaction.user.mention,
-        reason=reason
-    )
-
-
-async def ctx_mute_author(
-    interaction: discord.Interaction,
-    message: discord.Message
-):
-    if not await check_admin_or_reply(interaction, "mute"):
-        return
-
-    if not isinstance(message.author, discord.Member):
-        await interaction.response.send_message(
-            "Автор сообщения не является участником сервера.",
-            ephemeral=True
-        )
-        return
-
-    # FIX: был неправильный отступ
-    target = message.author
-
-    if not await ensure_target_allowed(interaction, target):
-        return
-
-    seconds = 3600
-    reason = "Mute через контекстное меню сообщения"
-    until = datetime.now(timezone.utc) + timedelta(seconds=seconds)
-
-    await target.timeout(until, reason=f"{reason} | Moderator: {interaction.user}")
-
-    await send_configured_response(
-        interaction,
-        "mute",
-        user=target.mention,
-        moderator=interaction.user.mention,
-        duration=human_duration(seconds),
-        reason=reason
-    )
-
-
-async def ctx_unmute_author(
-    interaction: discord.Interaction,
-    message: discord.Message
-):
-    if not await check_admin_or_reply(interaction, "unmute"):
-        return
-
-    if not isinstance(message.author, discord.Member):
-        await interaction.response.send_message(
-            "Автор сообщения не является участником сервера.",
-            ephemeral=True
-        )
-        return
-
-    target = message.author
-
-    if not await ensure_target_allowed(interaction, target):
-        return
-
-    await target.timeout(None, reason=f"Unmute through context menu | Moderator: {interaction.user}")
-
-    await send_configured_response(
-        interaction,
-        "unmute",
-        user=target.mention,
-        moderator=interaction.user.mention
-    )
-
-
-async def ctx_warn_author(
-    interaction: discord.Interaction,
-    message: discord.Message
-):
-    if not await check_admin_or_reply(interaction, "warn"):
-        return
-
-    if not isinstance(message.author, discord.Member):
-        await interaction.response.send_message(
-            "Автор сообщения не является участником сервера.",
-            ephemeral=True
-        )
-        return
-
-    target = message.author
-    reason = "Warn через контекстное меню сообщения"
-
-    warnings = get_user_warnings(interaction.guild.id, target.id)
-
-    warnings.append({
-        "reason": reason,
-        "moderator_id": interaction.user.id,
-        "moderator_name": str(interaction.user),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "message_id": message.id,
-        "channel_id": message.channel.id
-    })
-
-    save_data(data)
-
-    await send_configured_response(
-        interaction,
-        "warn",
-        user=target.mention,
-        moderator=interaction.user.mention,
-        reason=reason,
-        count=len(warnings)
-    )
-
-
-async def ctx_clear_message(
-    interaction: discord.Interaction,
-    message: discord.Message
-):
-    if not await check_admin_or_reply(interaction, "clear"):
-        return
-
-    await message.delete()
-
-    await send_configured_response(
-        interaction,
-        "clear",
-        moderator=interaction.user.mention
-    )
-
-
-async def ctx_purge_author(
-    interaction: discord.Interaction,
-    message: discord.Message
-):
-    if not await check_admin_or_reply(interaction, "purge"):
-        return
-
-    if not isinstance(message.author, discord.Member):
-        await interaction.response.send_message(
-            "Автор сообщения не является участником сервера.",
-            ephemeral=True
-        )
-        return
-
-    target = message.author
-    channel = message.channel
-
-    if not isinstance(channel, discord.TextChannel):
-        await interaction.response.send_message(
-            "Эта команда работает только в текстовом канале.",
-            ephemeral=True
-        )
-        return
-
-    await interaction.response.defer()
-
-    deleted = await channel.purge(
-        limit=1000,
-        check=lambda msg: msg.author.id == target.id,
-        reason=f"Purge through context menu by {interaction.user}"
-    )
-
-    await send_configured_response(
-        interaction,
-        "purge",
-        user=target.mention,
-        moderator=interaction.user.mention,
-        count=len(deleted)
-    )
-
-
-bot.tree.add_command(app_commands.ContextMenu(
-    name="Ban author",
-    callback=ctx_ban_author
-))
-
-bot.tree.add_command(app_commands.ContextMenu(
-    name="Kick author",
-    callback=ctx_kick_author
-))
-
-bot.tree.add_command(app_commands.ContextMenu(
-    name="Mute author 1h",
-    callback=ctx_mute_author
-))
-
-bot.tree.add_command(app_commands.ContextMenu(
-    name="Unmute author",
-    callback=ctx_unmute_author
-))
-
-bot.tree.add_command(app_commands.ContextMenu(
-    name="Warn author",
-    callback=ctx_warn_author
-))
-
-bot.tree.add_command(app_commands.ContextMenu(
-    name="Clear message",
-    callback=ctx_clear_message
-))
-
-bot.tree.add_command(app_commands.ContextMenu(
-    name="Purge author messages",
-    callback=ctx_purge_author
-))
-
+@bot.event
+async def on_command_error(ctx: commands.Context, error):
+    if isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send(f"Не хватает аргумента: `{error.param.name}`.")
+    elif isinstance(error, commands.MemberNotFound):
+        await ctx.send("Пользователь не найден.")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send("Неверный аргумент.")
+    elif isinstance(error, commands.CommandNotFound):
+        pass  # Игнорируем неизвестные команды
+    else:
+        raise error
 
 
 @bot.event
