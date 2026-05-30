@@ -1,1 +1,1 @@
-worker: pchola-chat-manager.py
+worker: python pchola-chat-manager.py
